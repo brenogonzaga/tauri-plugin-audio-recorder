@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-plugin-audio-recorderexamplesaudio-recorder-example",
+  "productName": "tauri-plugin-audio-recorder",
   "version": "0.1.0",
-  "identifier": "com.zero.tauri-plugin-audio-recorderexamplesaudio-recorder-example",
+  "identifier": "com.zero.tauri-plugin-audio-recorder",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-plugin-audio-recorderexamplesaudio-recorder-example",
+        "title": "tauri-plugin-audio-recorder",
         "width": 800,
         "height": 600
       }

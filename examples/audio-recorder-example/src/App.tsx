@@ -1,34 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  Box,
-  Button,
-  Typography,
-  Paper,
-  Stack,
-  Alert,
-  CircularProgress,
-  ToggleButton,
-  ToggleButtonGroup,
-  LinearProgress,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
-  Chip,
-  Slider,
-  Container,
-} from "@mui/material";
-import {
-  MdMic,
-  MdStop,
-  MdPause,
-  MdPlayArrow,
-  MdRefresh,
-  MdCheckCircle,
-  MdMicNone,
-  MdVolumeUp,
-  MdReplay,
-} from "react-icons/md";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   startRecording,
@@ -45,6 +15,7 @@ import {
   type AudioQuality,
   type PermissionResponse,
 } from "tauri-plugin-audio-recorder-api";
+import "./App.css";
 
 function App() {
   const [quality, setQuality] = useState<AudioQuality>("medium");
@@ -56,41 +27,33 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const recordingCount = useRef(0);
 
-  // Audio playback state
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [volume, setVolume] = useState(1);
 
-  // Load devices and check permission on mount
   useEffect(() => {
     loadDevices();
     checkPerm();
     return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-      }
+      if (pollingRef.current) clearInterval(pollingRef.current);
     };
   }, []);
 
-  // Start polling for status
   const startPolling = () => {
     if (pollingRef.current) return;
-
     pollingRef.current = setInterval(async () => {
       try {
-        const currentStatus = await getStatus();
-        setStatus(currentStatus);
-
-        if (currentStatus.state === "idle" && pollingRef.current) {
+        const s = await getStatus();
+        setStatus(s);
+        if (s.state === "idle" && pollingRef.current) {
           clearInterval(pollingRef.current);
           pollingRef.current = null;
         }
       } catch {
-        // Ignore polling errors
+        // ignore polling errors
       }
     }, 100);
   };
@@ -104,8 +67,7 @@ function App() {
 
   const checkPerm = async () => {
     try {
-      const perm = await checkPermission();
-      setPermission(perm);
+      setPermission(await checkPermission());
     } catch (err) {
       setError(`Failed to check permission: ${err}`);
     }
@@ -128,10 +90,8 @@ function App() {
     setLoading(true);
     setError(null);
     try {
-      const result = await getDevices();
-      setDevices(result.devices);
-      setSuccess(`Found ${result.devices.length} device(s)`);
-      setTimeout(() => setSuccess(null), 3000);
+      const res = await getDevices();
+      setDevices(res.devices);
     } catch (err) {
       setError(`Failed to load devices: ${err}`);
     } finally {
@@ -143,27 +103,20 @@ function App() {
     setError(null);
     setResult(null);
     try {
-      recordingCount.current += 1;
-      // Generate a unique filename with timestamp
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filename = `recording-${timestamp}`;
-
       await startRecording({
-        outputPath: filename,
+        outputPath: `recording-${timestamp}`,
         quality,
         format: "wav",
         maxDuration: 0,
       });
-
       startPolling();
       setSuccess("Recording started!");
       setTimeout(() => setSuccess(null), 2000);
     } catch (err) {
-      const errorMessage = String(err);
-      if (errorMessage.includes("permission")) {
-        setError(
-          `Permissão necessária: ${err}. Por favor, conceda a permissão e tente novamente.`
-        );
+      const msg = String(err);
+      if (msg.includes("permission")) {
+        setError(`Permission required: ${err}`);
       } else {
         setError(`Failed to start recording: ${err}`);
       }
@@ -174,10 +127,10 @@ function App() {
     setError(null);
     try {
       stopPolling();
-      const recordingResult = await stopRecording();
-      setResult(recordingResult);
+      const res = await stopRecording();
+      setResult(res);
       setStatus(null);
-      setSuccess("Recording stopped!");
+      setSuccess("Recording saved!");
       setTimeout(() => setSuccess(null), 2000);
     } catch (err) {
       setError(`Failed to stop recording: ${err}`);
@@ -188,12 +141,9 @@ function App() {
     setError(null);
     try {
       await pauseRecording();
-      const currentStatus = await getStatus();
-      setStatus(currentStatus);
-      setSuccess("Recording paused");
-      setTimeout(() => setSuccess(null), 2000);
+      setStatus(await getStatus());
     } catch (err) {
-      setError(`Failed to pause recording: ${err}`);
+      setError(`Failed to pause: ${err}`);
     }
   };
 
@@ -201,12 +151,9 @@ function App() {
     setError(null);
     try {
       await resumeRecording();
-      const currentStatus = await getStatus();
-      setStatus(currentStatus);
-      setSuccess("Recording resumed");
-      setTimeout(() => setSuccess(null), 2000);
+      setStatus(await getStatus());
     } catch (err) {
-      setError(`Failed to resume recording: ${err}`);
+      setError(`Failed to resume: ${err}`);
     }
   };
 
@@ -224,69 +171,44 @@ function App() {
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
-  // Playback functions
   const handlePlayRecording = async () => {
     if (!result) return;
-
     if (audioRef.current) {
       if (isPlaying) {
         audioRef.current.pause();
         setIsPlaying(false);
       } else {
-        audioRef.current.play().catch(err => {
-          setError(`Play failed: ${err.message || err}`);
-        });
+        audioRef.current.play();
         setIsPlaying(true);
       }
       return;
     }
-
     try {
-      // Use convertFileSrc to create asset URL
       const audioUrl = convertFileSrc(result.filePath);
       const audio = new Audio(audioUrl);
       audioRef.current = audio;
       audio.volume = volume;
-
       audio.addEventListener("timeupdate", () => {
         if (audio.duration > 0) {
           setPlaybackProgress((audio.currentTime / audio.duration) * 100);
           setPlaybackTime(audio.currentTime * 1000);
         }
       });
-
       audio.addEventListener("ended", () => {
         setIsPlaying(false);
         setPlaybackProgress(0);
         setPlaybackTime(0);
-        URL.revokeObjectURL(audioUrl);
       });
-
       audio.addEventListener("error", () => {
-        const mediaError = audio.error;
-        let errorMsg = "Unknown error";
-        if (mediaError) {
-          switch (mediaError.code) {
-            case MediaError.MEDIA_ERR_ABORTED:
-              errorMsg = "Playback aborted";
-              break;
-            case MediaError.MEDIA_ERR_NETWORK:
-              errorMsg = "Network error";
-              break;
-            case MediaError.MEDIA_ERR_DECODE:
-              errorMsg =
-                "Decode error - file may be corrupted or unsupported format";
-              break;
-            case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-              errorMsg = "Source not supported";
-              break;
-          }
-        }
-        setError(`Playback error: ${errorMsg}`);
+        const codes: Record<number, string> = {
+          1: "Playback aborted",
+          2: "Network error",
+          3: "Decode error — file may be corrupted",
+          4: "Format not supported",
+        };
+        setError(`Playback error: ${codes[audio.error?.code ?? 0] ?? "Unknown"}`);
         setIsPlaying(false);
-        URL.revokeObjectURL(audioUrl);
       });
-
       await audio.play();
       setIsPlaying(true);
     } catch (err) {
@@ -313,24 +235,18 @@ function App() {
     }
   };
 
-  const handleVolumeChange = (_: Event, newValue: number | number[]) => {
-    const vol = newValue as number;
-    setVolume(vol);
-    if (audioRef.current) {
-      audioRef.current.volume = vol;
-    }
-  };
-
-  const handleSeek = (_: Event, newValue: number | number[]) => {
-    const progress = newValue as number;
+  const handleSeek = (value: number) => {
     if (audioRef.current && audioRef.current.duration) {
-      audioRef.current.currentTime =
-        (progress / 100) * audioRef.current.duration;
-      setPlaybackProgress(progress);
+      audioRef.current.currentTime = (value / 100) * audioRef.current.duration;
+      setPlaybackProgress(value);
     }
   };
 
-  // Cleanup audio on result change or unmount
+  const handleVolume = (value: number) => {
+    setVolume(value);
+    if (audioRef.current) audioRef.current.volume = value;
+  };
+
   useEffect(() => {
     return () => {
       if (audioRef.current) {
@@ -345,445 +261,229 @@ function App() {
   const isIdle = !status || status.state === "idle";
 
   return (
-    <Container maxWidth="md" sx={{ py: { xs: 2, sm: 3, md: 4 } }}>
-      <Paper
-        elevation={0}
-        sx={{
-          p: { xs: 2, sm: 3 },
-          mb: { xs: 2, sm: 3 },
-          borderRadius: 2,
-          background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-          color: "white",
-        }}
-      >
-        <Typography
-          variant="h4"
-          component="h1"
-          sx={{
-            fontSize: { xs: "1.5rem", sm: "2rem", md: "2.125rem" },
-            fontWeight: 700,
-            mb: 1,
-          }}
-        >
-          🎙️ Audio Recorder Example
-        </Typography>
-        <Typography
-          variant="body2"
-          sx={{
-            fontSize: { xs: "0.875rem", sm: "1rem" },
-            opacity: 0.9,
-            display: { xs: "none", sm: "block" },
-          }}
-        >
-          Test the native Audio Recorder plugin functionality
-        </Typography>
-      </Paper>
+    <div className="page">
+      <header className="header">
+        <div className="header-inner">
+          <h1 className="header-title">Audio Recorder</h1>
+          <p className="header-subtitle">Tauri Plugin — native recording on all platforms</p>
+        </div>
+      </header>
 
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
+      <main className="main">
+        {error && (
+          <div className="alert alert-error">
+            <span>{error}</span>
+            <button className="alert-close" onClick={() => setError(null)}>×</button>
+          </div>
+        )}
+        {success && (
+          <div className="alert alert-success">
+            <span>{success}</span>
+            <button className="alert-close" onClick={() => setSuccess(null)}>×</button>
+          </div>
+        )}
 
-      {success && (
-        <Alert
-          severity="success"
-          sx={{ mb: 2 }}
-          onClose={() => setSuccess(null)}
-        >
-          {success}
-        </Alert>
-      )}
-
-      <Stack spacing={{ xs: 2, sm: 3 }}>
-        {/* Permission Status */}
-        <Paper sx={{ p: { xs: 1.5, sm: 2 } }}>
-          <Typography
-            variant="subtitle2"
-            sx={{ fontSize: { xs: "0.875rem", sm: "1rem" } }}
-            gutterBottom
-          >
-            Permission Status
-          </Typography>
-          {permission ? (
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              spacing={{ xs: 1, sm: 2 }}
-              alignItems="center"
-            >
-              <Chip
-                label={permission.granted ? "Granted" : "Not Granted"}
-                color={permission.granted ? "success" : "warning"}
-                size="small"
-              />
-              {!permission.granted && (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  onClick={handleRequestPermission}
-                  sx={{ minHeight: { xs: 48, sm: 44 } }}
-                >
-                  Request Permission
-                </Button>
-              )}
-            </Stack>
+        {/* Permission */}
+        <div className="card">
+          <div className="card-row">
+            <h2 className="card-title">Permission</h2>
+          </div>
+          {permission === null ? (
+            <span className="spinner" />
           ) : (
-            <CircularProgress size={20} />
+            <div className="perm-row">
+              <span className={`badge ${permission.granted ? "badge--green" : "badge--orange"}`}>
+                {permission.granted ? "Granted" : "Not Granted"}
+              </span>
+              {!permission.granted && (
+                <button className="btn btn-primary btn-sm" onClick={handleRequestPermission}>
+                  Request Permission
+                </button>
+              )}
+            </div>
           )}
-        </Paper>
+        </div>
 
-        {/* Quality Selection */}
-        <Paper sx={{ p: { xs: 1.5, sm: 2 } }}>
-          <Typography
-            variant="subtitle2"
-            sx={{ fontSize: { xs: "0.875rem", sm: "1rem" } }}
-            gutterBottom
-          >
-            Recording Quality
-          </Typography>
-          <ToggleButtonGroup
-            value={quality}
-            exclusive
-            onChange={(_, newQuality) => newQuality && setQuality(newQuality)}
-            disabled={!isIdle}
-            fullWidth
-            size="small"
-          >
-            <ToggleButton value="low">Low (16kHz)</ToggleButton>
-            <ToggleButton value="medium">Medium (44kHz)</ToggleButton>
-            <ToggleButton value="high">High (48kHz)</ToggleButton>
-          </ToggleButtonGroup>
-        </Paper>
-
-        {/* Recording Status */}
-        <Paper sx={{ p: { xs: 2, sm: 3 }, textAlign: "center" }}>
-          <Box
-            sx={{
-              width: { xs: 64, sm: 80 },
-              height: { xs: 64, sm: 80 },
-              borderRadius: "50%",
-              mx: "auto",
-              mb: { xs: 1.5, sm: 2 },
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              bgcolor: isRecording
-                ? "error.main"
-                : isPaused
-                  ? "warning.main"
-                  : "grey.700",
-              animation: isRecording ? "pulse 1s infinite" : "none",
-              "@keyframes pulse": {
-                "0%, 100%": { opacity: 1 },
-                "50%": { opacity: 0.5 },
-              },
-            }}
-          >
-            <Box
-              component={MdMic}
-              sx={{ fontSize: { xs: 32, sm: 40 } }}
-              color="white"
-            />
-          </Box>
-
-          <Typography
-            variant="h3"
-            sx={{
-              fontVariantNumeric: "tabular-nums",
-              mb: 1,
-              fontSize: { xs: "2rem", sm: "3rem" },
-            }}
-          >
-            {formatTime(status?.durationMs || 0)}
-          </Typography>
-
-          <Chip
-            label={isRecording ? "Recording" : isPaused ? "Paused" : "Idle"}
-            color={isRecording ? "error" : isPaused ? "warning" : "default"}
-            sx={{ mb: { xs: 1.5, sm: 2 } }}
-          />
-
-          {(isRecording || isPaused) && (
-            <LinearProgress
-              variant="indeterminate"
-              color={isPaused ? "warning" : "error"}
-              sx={{ mb: { xs: 1.5, sm: 2 } }}
-            />
-          )}
-
-          {/* Controls */}
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={{ xs: 1.5, sm: 2 }}
-            justifyContent="center"
-            flexWrap="wrap"
-          >
-            {isIdle ? (
-              <Button
-                variant="contained"
-                color="error"
-                size="large"
-                startIcon={<MdMic />}
-                onClick={handleStartRecording}
-                disabled={!permission?.granted}
-                sx={{ minHeight: { xs: 48, sm: 44 } }}
+        {/* Quality */}
+        <div className="card">
+          <h2 className="card-title">Recording Quality</h2>
+          <div className="quality-group">
+            {(["low", "medium", "high"] as AudioQuality[]).map((q) => (
+              <button
+                key={q}
+                className={`quality-btn${quality === q ? " quality-btn--active" : ""}`}
+                onClick={() => setQuality(q)}
+                disabled={!isIdle}
               >
-                Start Recording
-              </Button>
-            ) : (
-              <>
-                <Button
-                  variant="contained"
-                  color="warning"
-                  startIcon={isPaused ? <MdPlayArrow /> : <MdPause />}
-                  onClick={
-                    isPaused ? handleResumeRecording : handlePauseRecording
-                  }
-                  sx={{ minHeight: { xs: 48, sm: 44 } }}
-                >
-                  {isPaused ? "Resume" : "Pause"}
-                </Button>
-                <Button
-                  variant="contained"
-                  color="primary"
-                  startIcon={<MdStop />}
-                  onClick={handleStopRecording}
-                  sx={{ minHeight: { xs: 48, sm: 44 } }}
-                >
-                  Stop
-                </Button>
-              </>
-            )}
-          </Stack>
-        </Paper>
+                {q === "low" ? "Low · 16 kHz" : q === "medium" ? "Medium · 44 kHz" : "High · 48 kHz"}
+              </button>
+            ))}
+          </div>
+        </div>
 
-        {/* Recording Result */}
-        {result && (
-          <Paper sx={{ p: { xs: 1.5, sm: 2 }, bgcolor: "success.dark" }}>
-            <Stack
-              direction="row"
-              spacing={1}
-              alignItems="center"
-              sx={{ mb: 1 }}
+        {/* Recording */}
+        <div className="card">
+          <div className="rec-panel">
+            <div
+              className={`rec-circle ${
+                isRecording
+                  ? "rec-circle--recording"
+                  : isPaused
+                    ? "rec-circle--paused"
+                    : "rec-circle--idle"
+              }`}
             >
-              <MdCheckCircle size={20} />
-              <Typography
-                variant="subtitle2"
-                sx={{ fontSize: { xs: "0.875rem", sm: "1rem" } }}
-              >
-                Recording Complete
-              </Typography>
-            </Stack>
-            <Typography
-              variant="body2"
-              sx={{
-                wordBreak: "break-all",
-                mb: 1,
-                fontSize: { xs: "0.875rem", sm: "1rem" },
-              }}
-            >
-              <strong>File:</strong> {result.filePath}
-            </Typography>
-            <Stack
-              direction="row"
-              spacing={{ xs: 1, sm: 2 }}
-              flexWrap="wrap"
-              sx={{ mb: { xs: 1.5, sm: 2 } }}
-            >
-              <Chip
-                label={`Duration: ${formatTime(result.durationMs)}`}
-                size="small"
-                variant="outlined"
-              />
-              <Chip
-                label={`Size: ${formatSize(result.fileSize)}`}
-                size="small"
-                variant="outlined"
-              />
-              <Chip
-                label={`${result.sampleRate}Hz`}
-                size="small"
-                variant="outlined"
-              />
-              <Chip
-                label={`${result.channels}ch`}
-                size="small"
-                variant="outlined"
-              />
-            </Stack>
+              🎙
+            </div>
 
-            {/* Audio Player Controls */}
-            <Paper
-              elevation={0}
-              sx={{
-                p: { xs: 1.5, sm: 2 },
-                bgcolor: "rgba(255,255,255,0.1)",
-                borderRadius: 2,
-              }}
-            >
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ mb: 1, fontSize: { xs: "0.625rem", sm: "0.75rem" } }}
-              >
-                🎧 Playback
-              </Typography>
+            <span className="rec-time">{formatTime(status?.durationMs ?? 0)}</span>
 
-              {/* Progress bar */}
-              <Stack
-                direction="row"
-                alignItems="center"
-                spacing={1}
-                sx={{ mb: 1 }}
-              >
-                <Typography
-                  variant="caption"
-                  sx={{
-                    minWidth: 50,
-                    fontSize: { xs: "0.625rem", sm: "0.75rem" },
-                  }}
-                >
-                  {formatTime(playbackTime)}
-                </Typography>
-                <Slider
-                  size="small"
-                  value={playbackProgress}
-                  onChange={handleSeek}
-                  sx={{ flex: 1 }}
+            <span
+              className={`badge ${
+                isRecording ? "badge--red" : isPaused ? "badge--orange" : "badge--gray"
+              }`}
+            >
+              {isRecording ? "Recording" : isPaused ? "Paused" : "Idle"}
+            </span>
+
+            {(isRecording || isPaused) && (
+              <div className="rec-progress">
+                <div
+                  className={`rec-progress-fill ${
+                    isPaused ? "rec-progress-fill--paused" : "rec-progress-fill--recording"
+                  }`}
                 />
-                <Typography
-                  variant="caption"
-                  sx={{
-                    minWidth: 50,
-                    fontSize: { xs: "0.625rem", sm: "0.75rem" },
-                  }}
-                >
-                  {formatTime(result.durationMs)}
-                </Typography>
-              </Stack>
+              </div>
+            )}
 
-              {/* Controls */}
-              <Stack
-                direction={{ xs: "column", sm: "row" }}
-                spacing={{ xs: 1, sm: 1 }}
-                alignItems="center"
-                justifyContent="center"
-              >
-                <Button
-                  variant="contained"
-                  size="small"
-                  color="secondary"
-                  startIcon={<MdReplay />}
+            <div className="rec-actions">
+              {isIdle ? (
+                <button
+                  className="btn btn-record"
+                  onClick={handleStartRecording}
+                  disabled={!permission?.granted}
+                >
+                  ● Start Recording
+                </button>
+              ) : (
+                <>
+                  <button
+                    className="btn btn-warn"
+                    onClick={isPaused ? handleResumeRecording : handlePauseRecording}
+                  >
+                    {isPaused ? "▶ Resume" : "⏸ Pause"}
+                  </button>
+                  <button className="btn btn-primary" onClick={handleStopRecording}>
+                    ■ Stop
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Result */}
+        {result && (
+          <div className="card">
+            <div className="card-row">
+              <h2 className="card-title">Recording Saved</h2>
+              <span className="badge badge--green">✓ Done</span>
+            </div>
+
+            <p className="result-file">{result.filePath}</p>
+
+            <div className="result-badges">
+              <span className="badge badge--gray">{formatTime(result.durationMs)}</span>
+              <span className="badge badge--gray">{formatSize(result.fileSize)}</span>
+              <span className="badge badge--gray">{result.sampleRate} Hz</span>
+              <span className="badge badge--gray">{result.channels}ch</span>
+            </div>
+
+            <div className="player">
+              <span className="player-label">Playback</span>
+
+              <div className="player-seek">
+                <span className="player-time">{formatTime(playbackTime)}</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={playbackProgress}
+                  onChange={(e) => handleSeek(Number(e.target.value))}
+                />
+                <span className="player-time player-time--right">
+                  {formatTime(result.durationMs)}
+                </span>
+              </div>
+
+              <div className="player-controls">
+                <button
+                  className="btn btn-secondary btn-sm"
                   onClick={handleReplayRecording}
                   disabled={!audioRef.current}
-                  sx={{ minHeight: { xs: 48, sm: 44 } }}
                 >
-                  Replay
-                </Button>
-                <Button
-                  variant="contained"
-                  size="small"
-                  color={isPlaying ? "warning" : "primary"}
-                  startIcon={isPlaying ? <MdPause /> : <MdPlayArrow />}
+                  ↺ Replay
+                </button>
+                <button
+                  className="btn btn-primary btn-sm"
                   onClick={handlePlayRecording}
-                  sx={{ minHeight: { xs: 48, sm: 44 } }}
                 >
-                  {isPlaying ? "Pause" : "Play"}
-                </Button>
-                <Button
-                  variant="contained"
-                  size="small"
-                  color="error"
-                  startIcon={<MdStop />}
+                  {isPlaying ? "⏸ Pause" : "▶ Play"}
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
                   onClick={handleStopPlayback}
                   disabled={!isPlaying && playbackProgress === 0}
-                  sx={{ minHeight: { xs: 48, sm: 44 } }}
                 >
-                  Stop
-                </Button>
-              </Stack>
+                  ■ Stop
+                </button>
+              </div>
 
-              {/* Volume control */}
-              <Stack
-                direction="row"
-                spacing={1}
-                alignItems="center"
-                sx={{ mt: { xs: 1.5, sm: 2 } }}
-              >
-                <MdVolumeUp size={20} />
-                <Slider
-                  size="small"
-                  value={volume}
-                  onChange={handleVolumeChange}
+              <div className="player-volume">
+                <span className="player-label">Vol</span>
+                <input
+                  type="range"
                   min={0}
                   max={1}
-                  step={0.1}
-                  sx={{ width: { xs: 80, sm: 100 } }}
+                  step={0.05}
+                  value={volume}
+                  onChange={(e) => handleVolume(Number(e.target.value))}
+                  style={{ maxWidth: 120 }}
                 />
-                <Typography
-                  variant="caption"
-                  sx={{ fontSize: { xs: "0.625rem", sm: "0.75rem" } }}
-                >
-                  {Math.round(volume * 100)}%
-                </Typography>
-              </Stack>
-            </Paper>
-          </Paper>
+                <span className="player-volume-label">{Math.round(volume * 100)}%</span>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Devices */}
-        <Paper sx={{ p: { xs: 1.5, sm: 2 } }}>
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            justifyContent="space-between"
-            alignItems={{ xs: "flex-start", sm: "center" }}
-            sx={{ mb: 1, gap: { xs: 1, sm: 0 } }}
-          >
-            <Typography
-              variant="subtitle2"
-              sx={{ fontSize: { xs: "0.875rem", sm: "1rem" } }}
-            >
-              Audio Input Devices
-            </Typography>
-            <Button
-              size="small"
-              startIcon={
-                loading ? <CircularProgress size={16} /> : <MdRefresh />
-              }
-              onClick={loadDevices}
-              disabled={loading}
-              sx={{ minHeight: { xs: 48, sm: 44 } }}
-            >
-              Refresh
-            </Button>
-          </Stack>
-          <List dense>
-            {devices.map(device => (
-              <ListItem key={device.id}>
-                <ListItemIcon sx={{ minWidth: 36 }}>
-                  <MdMicNone size={20} />
-                </ListItemIcon>
-                <ListItemText
-                  primary={device.name}
-                  secondary={device.isDefault ? "Default device" : undefined}
-                />
-                {device.isDefault && (
-                  <Chip label="Default" size="small" color="primary" />
-                )}
-              </ListItem>
-            ))}
-            {devices.length === 0 && !loading && (
-              <ListItem>
-                <ListItemText
-                  primary="No devices found"
-                  secondary="Check your microphone connection"
-                />
-              </ListItem>
-            )}
-          </List>
-        </Paper>
-      </Stack>
-    </Container>
+        <div className="card">
+          <div className="card-row">
+            <h2 className="card-title">Audio Input Devices</h2>
+            <button className="btn btn-ghost btn-sm" onClick={loadDevices} disabled={loading}>
+              {loading ? <span className="spinner" /> : "↻ Refresh"}
+            </button>
+          </div>
+
+          {devices.length === 0 && !loading ? (
+            <p className="empty">No devices found. Click Refresh.</p>
+          ) : (
+            <div className="device-list">
+              {devices.map((device) => (
+                <div key={device.id} className="device-row">
+                  <div className="device-info">
+                    <span className="device-name">{device.name}</span>
+                    {device.isDefault && <span className="device-sub">Default device</span>}
+                  </div>
+                  {device.isDefault && <span className="badge">Default</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
   );
 }
 

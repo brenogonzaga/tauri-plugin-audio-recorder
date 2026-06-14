@@ -10,22 +10,21 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
-    "tauri-plugin-audio-recorder-api": "file:../..",
-    "@mui/material": "^7.3.0",
-    "@emotion/react": "^11.14.0",
-    "@emotion/styled": "^11.14.0",
-    "react-icons": "^5.5.0"
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tauri-plugin-audio-recorder-api": "file:../.."
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
-    "typescript": "~5.8.3",
-    "vite": "^7.0.4",
-    "@tauri-apps/cli": "^2"
+    "@vitejs/plugin-react": "^6.0.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true
   }
 }
