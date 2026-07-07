@@ -130,6 +130,28 @@ fn recording_thread(rx: mpsc::Receiver<RecorderCommand>, shared: Arc<SharedState
     }
 }
 
+/// Resolve the input device for a recording: the device whose name matches
+/// `device_id` (as returned by `get_devices`), or the system default when no
+/// id is given. A requested device that is no longer present (e.g. unplugged
+/// since the last device scan) falls back to the default so the recording
+/// still succeeds.
+fn find_input_device(host: &cpal::Host, device_id: Option<&str>) -> Result<cpal::Device, Error> {
+    if let Some(id) = device_id {
+        let mut devices = host
+            .input_devices()
+            .map_err(|e| Error::Recording(format!("Failed to enumerate devices: {}", e)))?;
+        if let Some(device) = devices.find(|d| d.name().map(|n| n == id).unwrap_or(false)) {
+            log::info!("Using requested input device: {}", id);
+            return Ok(device);
+        }
+        log::warn!(
+            "Requested input device '{}' not found, falling back to default",
+            id
+        );
+    }
+    host.default_input_device().ok_or(Error::DeviceNotFound)
+}
+
 fn start_recording_internal(
     config: &RecordingConfig,
     shared: &Arc<SharedState>,
@@ -146,7 +168,7 @@ fn start_recording_internal(
     }
 
     let host = cpal::default_host();
-    let device = host.default_input_device().ok_or(Error::DeviceNotFound)?;
+    let device = find_input_device(&host, config.device_id.as_deref())?;
 
     // Get the device's default/supported configuration
     let supported_config = device

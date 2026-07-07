@@ -11,6 +11,13 @@ export interface RecordingConfig {
   quality?: AudioQuality;
   /** Maximum recording duration in seconds. 0 means no limit. */
   maxDuration?: number;
+  /**
+   * Input device to record from, identified by the `id` returned from
+   * `getDevices()`. Defaults to the system default input device.
+   * Desktop only; ignored on mobile. Falls back to the default device
+   * if the requested device is no longer available.
+   */
+  deviceId?: string;
 }
 
 export type RecordingState = "idle" | "recording" | "paused";
