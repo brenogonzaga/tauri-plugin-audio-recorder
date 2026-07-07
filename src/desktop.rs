@@ -113,8 +113,9 @@ fn recording_thread(rx: mpsc::Receiver<RecorderCommand>, shared: Arc<SharedState
                 }
             }
             Ok(RecorderCommand::Shutdown) | Err(_) => {
-                // Clean up and exit
+                // Clean up and exit (pause first — see stop_recording_internal)
                 if let Some(stream) = current_stream.take() {
+                    let _ = stream.pause();
                     drop(stream);
                 }
                 if let Some(writer) = current_writer.take() {
@@ -400,8 +401,15 @@ fn stop_recording_internal(
         return Err(Error::NotRecording);
     }
 
-    // Stop the stream
+    // Stop the stream. Dropping alone is not enough: on macOS (cpal 0.15)
+    // the stream's device-disconnect listener holds a clone of the stream,
+    // so this drop never destroys the AudioUnit and the input device stays
+    // open — the OS mic-in-use indicator (and e.g. the record LED on USB
+    // dictation microphones) stays on for the app's lifetime.
     if let Some(s) = stream.take() {
+        if let Err(e) = s.pause() {
+            log::warn!("Failed to stop audio stream: {}", e);
+        }
         drop(s);
     }
 
