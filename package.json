@@ -1,6 +1,6 @@
 {
     "name": "tauri-plugin-audio-recorder-api",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "author": "Affex Team",
     "description": "Cross-platform audio recording API for Tauri applications with pause/resume support",
     "license": "MIT",
