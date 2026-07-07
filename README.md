@@ -118,12 +118,22 @@ if (result.filePath.endsWith(".m4a")) {
 }
 ```
 
-### Device enumeration (desktop only)
+### Device enumeration and selection (desktop only)
 
 ```typescript
 const { devices } = await getDevices(); // returns [] on mobile
 devices.forEach(d => console.log(d.name, d.isDefault ? "(default)" : ""));
+
+// Record from a specific device instead of the system default
+await startRecording({
+  outputPath: "/path/to/recording",
+  deviceId: devices[0].id,
+});
 ```
+
+If the requested device is no longer available when recording starts (e.g.
+unplugged), the recorder logs a warning and falls back to the system default
+device.
 
 ### Max-duration detection
 
@@ -159,6 +169,7 @@ interface RecordingConfig {
   outputPath: string;                   // without extension
   quality?: "low" | "medium" | "high"; // 16kHz mono | 44.1kHz mono | 48kHz stereo
   maxDuration?: number;                 // seconds, 0 = unlimited
+  deviceId?: string;                    // id from getDevices(); desktop only, default = system default
 }
 ```
 

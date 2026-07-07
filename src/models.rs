@@ -54,6 +54,11 @@ pub struct RecordingConfig {
     /// Maximum recording duration in seconds (0 = unlimited)
     #[serde(default)]
     pub max_duration: u32,
+    /// Input device to record from, identified by the `id` returned from
+    /// `get_devices` (default: system default input device).
+    /// Desktop only; ignored on mobile.
+    #[serde(default)]
+    pub device_id: Option<String>,
 }
 
 /// Recording state
@@ -184,5 +189,17 @@ mod tests {
         assert!(matches!(config.format, AudioFormat::Wav));
         assert!(matches!(config.quality, AudioQuality::Medium));
         assert_eq!(config.max_duration, 0);
+        assert_eq!(config.device_id, None);
+    }
+
+    #[test]
+    fn test_recording_config_device_id() {
+        let json = r#"{
+            "outputPath": "/test",
+            "deviceId": "Digta SonicMic 3"
+        }"#;
+        let config: RecordingConfig = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.device_id.as_deref(), Some("Digta SonicMic 3"));
     }
 }
