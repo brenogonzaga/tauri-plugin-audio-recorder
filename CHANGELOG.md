@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-07-07
+
+### Fixed
+
+- macOS: `stopRecording` could leave the input device open indefinitely when recording from a manually selected device (`deviceId`) — the OS mic-in-use indicator and USB mic record LEDs stayed on, and leaked stream callbacks could corrupt reported durations. The stream is now explicitly paused before being dropped, in both the stop and shutdown paths ([#3](https://github.com/brenogonzaga/tauri-plugin-audio-recorder/pull/3))
+
+## [0.1.1] - 2026-07-07
+
+### Added
+
+- `deviceId` field in `RecordingConfig` to record from a specific input device instead of the system default ([#2](https://github.com/brenogonzaga/tauri-plugin-audio-recorder/pull/2))
+
 ## [0.1.0] - 2025-12
 
 ### Added

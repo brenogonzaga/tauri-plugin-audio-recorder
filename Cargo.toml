@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-audio-recorder"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Affex Team"]
 description = "Cross-platform audio recording plugin for Tauri applications with pause/resume support"
 edition = "2021"
