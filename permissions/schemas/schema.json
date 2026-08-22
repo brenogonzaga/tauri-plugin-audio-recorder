@@ -307,6 +307,18 @@
           "markdownDescription": "Denies the check_permission command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_channels command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-channels",
+          "markdownDescription": "Enables the get_channels command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_channels command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-channels",
+          "markdownDescription": "Denies the get_channels command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_devices command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-devices",
@@ -391,10 +403,10 @@
           "markdownDescription": "Denies the stop_recording command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the Audio Recorder plugin - allows all audio recording operations\n#### This default permission set includes:\n\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-pause-recording`\n- `allow-resume-recording`\n- `allow-get-status`\n- `allow-get-devices`\n- `allow-check-permission`\n- `allow-request-permission`",
+          "description": "Default permissions for the Audio Recorder plugin - allows all audio recording operations\n#### This default permission set includes:\n\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-pause-recording`\n- `allow-resume-recording`\n- `allow-get-status`\n- `allow-get-devices`\n- `allow-get-channels`\n- `allow-check-permission`\n- `allow-request-permission`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the Audio Recorder plugin - allows all audio recording operations\n#### This default permission set includes:\n\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-pause-recording`\n- `allow-resume-recording`\n- `allow-get-status`\n- `allow-get-devices`\n- `allow-check-permission`\n- `allow-request-permission`"
+          "markdownDescription": "Default permissions for the Audio Recorder plugin - allows all audio recording operations\n#### This default permission set includes:\n\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-pause-recording`\n- `allow-resume-recording`\n- `allow-get-status`\n- `allow-get-devices`\n- `allow-get-channels`\n- `allow-check-permission`\n- `allow-request-permission`"
         }
       ]
     }

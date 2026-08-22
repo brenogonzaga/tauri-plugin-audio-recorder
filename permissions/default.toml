@@ -9,6 +9,7 @@ permissions = [
     "allow-resume-recording",
     "allow-get-status",
     "allow-get-devices",
+    "allow-get-channels",
     "allow-check-permission",
     "allow-request-permission",
 ]

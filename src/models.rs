@@ -59,6 +59,12 @@ pub struct RecordingConfig {
     /// Desktop only; ignored on mobile.
     #[serde(default)]
     pub device_id: Option<String>,
+    /// Input channel to record from, identified by the `id` returned from
+    /// `get_channels` (default: all channels of the device).
+    /// Selecting a channel produces a mono recording.
+    /// Desktop only; ignored on mobile.
+    #[serde(default)]
+    pub channel_id: Option<String>,
 }
 
 /// Recording state
@@ -121,6 +127,25 @@ pub struct AudioDevice {
 #[serde(rename_all = "camelCase")]
 pub struct AudioDevicesResponse {
     pub devices: Vec<AudioDevice>,
+}
+
+/// Audio input channel of a device
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioChannel {
+    /// Channel identifier (the channel's index in the input stream)
+    pub id: String,
+    /// Human-readable channel name
+    pub name: String,
+    /// Whether this is the first channel of the device
+    pub is_default: bool,
+}
+
+/// List of available channels of an audio device
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioChannelsResponse {
+    pub channels: Vec<AudioChannel>,
 }
 
 /// Permission status
@@ -190,6 +215,7 @@ mod tests {
         assert!(matches!(config.quality, AudioQuality::Medium));
         assert_eq!(config.max_duration, 0);
         assert_eq!(config.device_id, None);
+        assert_eq!(config.channel_id, None);
     }
 
     #[test]
@@ -201,5 +227,16 @@ mod tests {
         let config: RecordingConfig = serde_json::from_str(json).unwrap();
 
         assert_eq!(config.device_id.as_deref(), Some("Digta SonicMic 3"));
+    }
+
+    #[test]
+    fn test_recording_config_channel_id() {
+        let json = r#"{
+            "outputPath": "/test",
+            "channelId": "1"
+        }"#;
+        let config: RecordingConfig = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.channel_id.as_deref(), Some("1"));
     }
 }

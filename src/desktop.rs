@@ -153,6 +153,58 @@ fn find_input_device(host: &cpal::Host, device_id: Option<&str>) -> Result<cpal:
     host.default_input_device().ok_or(Error::DeviceNotFound)
 }
 
+/// Number of input channels a device can deliver: the widest configuration it
+/// supports, since that is the stream a single channel has to be picked out of.
+fn device_channel_count(device: &cpal::Device) -> u16 {
+    let from_supported = device
+        .supported_input_configs()
+        .ok()
+        .and_then(|configs| configs.map(|cfg| cfg.channels()).max());
+
+    match from_supported {
+        Some(channels) if channels > 0 => channels,
+        _ => device
+            .default_input_config()
+            .map(|cfg| cfg.channels())
+            .unwrap_or(1),
+    }
+}
+
+/// Resolve the channel index for a recording: the channel whose `id` (as
+/// returned by `get_channels`) was requested, or `None` to record every
+/// channel. Unlike a missing device, a channel the device does not have is an
+/// error — silently recording a different channel would be indistinguishable
+/// from success.
+fn resolve_channel(channel_id: Option<&str>, available: u16) -> Result<Option<u16>, Error> {
+    let Some(id) = channel_id else {
+        return Ok(None);
+    };
+
+    let index: u16 = id
+        .parse()
+        .map_err(|_| Error::InvalidChannel(format!("'{}' is not a channel id", id)))?;
+
+    if index >= available {
+        return Err(Error::InvalidChannel(format!(
+            "'{}' — device has {} channel(s)",
+            id, available
+        )));
+    }
+
+    log::info!("Using requested input channel: {}", index);
+    Ok(Some(index))
+}
+
+/// Samples that belong in the WAV file: the whole interleaved buffer, or only
+/// the selected channel's sample from each frame.
+fn wav_samples<T>(data: &[T], channel: Option<u16>, channels: u16) -> impl Iterator<Item = &T> {
+    let (offset, step) = match channel {
+        Some(index) => (index as usize, channels as usize),
+        None => (0, 1),
+    };
+    data.iter().skip(offset).step_by(step)
+}
+
 fn start_recording_internal(
     config: &RecordingConfig,
     shared: &Arc<SharedState>,
@@ -170,6 +222,8 @@ fn start_recording_internal(
 
     let host = cpal::default_host();
     let device = find_input_device(&host, config.device_id.as_deref())?;
+    let available_channels = device_channel_count(&device);
+    let selected_channel = resolve_channel(config.channel_id.as_deref(), available_channels)?;
 
     // Get the device's default/supported configuration
     let supported_config = device
@@ -178,7 +232,12 @@ fn start_recording_internal(
 
     // Try to use quality preset settings, fall back to device defaults
     let target_sample_rate = config.quality.sample_rate();
-    let target_channels = config.quality.channels();
+    let target_channels = match selected_channel {
+        // A single channel can only be picked out of a stream that carries it,
+        // so capture everything the device offers and drop the rest on write.
+        Some(_) => available_channels,
+        None => config.quality.channels(),
+    };
 
     // Check if device supports the target configuration
     let supported_configs = device.supported_input_configs();
@@ -233,6 +292,24 @@ fn start_recording_internal(
         )
     };
 
+    // The negotiation above can settle on fewer channels than the device
+    // advertises, which would leave the requested channel out of the stream.
+    if let Some(index) = selected_channel {
+        if index >= channels {
+            return Err(Error::InvalidChannel(format!(
+                "'{}' — the input stream has {} channel(s)",
+                index, channels
+            )));
+        }
+    }
+
+    // Only the selected channel is written, so the file becomes mono
+    let output_channels = if selected_channel.is_some() {
+        1
+    } else {
+        channels
+    };
+
     log::info!(
         "Recording config: {}Hz, {} channels, format: {:?}",
         sample_rate,
@@ -276,7 +353,7 @@ fn start_recording_internal(
     }
 
     let spec = WavSpec {
-        channels,
+        channels: output_channels,
         sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
@@ -304,7 +381,7 @@ fn start_recording_internal(
                 }
                 if let Ok(mut guard) = writer_clone.lock() {
                     if let Some(ref mut w) = *guard {
-                        for &sample in data {
+                        for &sample in wav_samples(data, selected_channel, channels) {
                             let sample_i16 = (sample * 32767.0) as i16;
                             let _ = w.write_sample(sample_i16);
                         }
@@ -328,7 +405,7 @@ fn start_recording_internal(
                     }
                     if let Ok(mut guard) = writer_clone.lock() {
                         if let Some(ref mut w) = *guard {
-                            for &sample in data {
+                            for &sample in wav_samples(data, selected_channel, channels) {
                                 let _ = w.write_sample(sample);
                             }
                         }
@@ -352,7 +429,7 @@ fn start_recording_internal(
                     }
                     if let Ok(mut guard) = writer_clone.lock() {
                         if let Some(ref mut w) = *guard {
-                            for &sample in data {
+                            for &sample in wav_samples(data, selected_channel, channels) {
                                 let sample_i16 = (sample as i32 - 32768) as i16;
                                 let _ = w.write_sample(sample_i16);
                             }
@@ -380,13 +457,15 @@ fn start_recording_internal(
     shared
         .sample_rate
         .store(sample_rate as u64, Ordering::SeqCst);
-    shared.channels.store(channels as u64, Ordering::SeqCst);
+    shared
+        .channels
+        .store(output_channels as u64, Ordering::SeqCst);
     *shared.output_path.lock().unwrap() = Some(file_path);
 
     log::info!(
         "Recording started: {}Hz, {} channels",
         sample_rate,
-        channels
+        output_channels
     );
 
     Ok((stream, writer, write_enabled))
@@ -560,6 +639,22 @@ impl<R: Runtime> AudioRecorder<R> {
         Ok(AudioDevicesResponse { devices: result })
     }
 
+    /// List the input channels of an audio device
+    pub fn get_channels(&self, device_id: Option<String>) -> crate::Result<AudioChannelsResponse> {
+        let host = cpal::default_host();
+        let device = find_input_device(&host, device_id.as_deref())?;
+
+        let channels = (0..device_channel_count(&device))
+            .map(|index| AudioChannel {
+                id: index.to_string(),
+                name: format!("Channel {}", index + 1),
+                is_default: index == 0,
+            })
+            .collect();
+
+        Ok(AudioChannelsResponse { channels })
+    }
+
     /// Check microphone permission (always granted on desktop)
     pub fn check_permission(&self) -> crate::Result<PermissionStatus> {
         // On desktop, microphone access is typically granted at the OS level
@@ -589,5 +684,50 @@ impl<R: Runtime> Drop for AudioRecorder<R> {
                 let _ = handle.join();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_channel_none() {
+        assert_eq!(resolve_channel(None, 2).unwrap(), None);
+    }
+
+    #[test]
+    fn test_resolve_channel_selected() {
+        assert_eq!(resolve_channel(Some("0"), 2).unwrap(), Some(0));
+        assert_eq!(resolve_channel(Some("1"), 2).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn test_resolve_channel_invalid() {
+        assert!(matches!(
+            resolve_channel(Some("2"), 2),
+            Err(Error::InvalidChannel(_))
+        ));
+        assert!(matches!(
+            resolve_channel(Some("abc"), 2),
+            Err(Error::InvalidChannel(_))
+        ));
+    }
+
+    #[test]
+    fn test_wav_samples_all_channels() {
+        let data = [1, 2, 3, 4];
+        let samples: Vec<_> = wav_samples(&data, None, 2).copied().collect();
+        assert_eq!(samples, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_wav_samples_selected_channel() {
+        // Two interleaved frames: [left, right, left, right]
+        let data = [1, 2, 3, 4];
+        let left: Vec<_> = wav_samples(&data, Some(0), 2).copied().collect();
+        let right: Vec<_> = wav_samples(&data, Some(1), 2).copied().collect();
+        assert_eq!(left, vec![1, 3]);
+        assert_eq!(right, vec![2, 4]);
     }
 }

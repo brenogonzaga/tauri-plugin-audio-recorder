@@ -5,6 +5,7 @@ const COMMANDS: &[&str] = &[
     "resume_recording",
     "get_status",
     "get_devices",
+    "get_channels",
     "check_permission",
     "request_permission",
 ];
