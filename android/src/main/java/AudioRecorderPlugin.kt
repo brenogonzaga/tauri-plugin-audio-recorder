@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
@@ -246,14 +247,14 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
                     setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                     Log.d(TAG, "Audio encoder set: AAC")
                     
-                    setAudioSamplingRate(44100)
+                    setAudioSamplingRate(currentSampleRate)
                     setAudioEncodingBitRate(128000)
-                    setAudioChannels(1)
-                    
+                    setAudioChannels(currentChannels)
+
                     setOutputFile(filePath)
                     Log.d(TAG, "Output file set: $filePath")
 
-                    Log.i(TAG, "MediaRecorder configured: format=MPEG_4, encoder=AAC, sampleRate=44100, bitRate=128000")
+                    Log.i(TAG, "MediaRecorder configured: format=MPEG_4, encoder=AAC, sampleRate=$currentSampleRate, channels=$currentChannels, bitRate=128000")
 
                     prepare()
                     Log.d(TAG, "MediaRecorder prepared")
@@ -274,7 +275,11 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
             if (config.maxDuration > 0) {
                 maxDurationHandler = Handler(Looper.getMainLooper())
                 maxDurationRunnable = Runnable {
-                    stopRecordingInternal()
+                    try {
+                        stopRecordingInternal()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error auto-stopping at maxDuration: ${e.message}", e)
+                    }
                 }
                 maxDurationHandler?.postDelayed(maxDurationRunnable!!, config.maxDuration * 1000L)
             }
@@ -510,11 +515,16 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
         val granted = ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
 
-        val canRequest = !ActivityCompat.shouldShowRequestPermissionRationale(
+        // shouldShowRequestPermissionRationale() is true only once the user has already
+        // denied once but not permanently ("don't ask again" / 2nd+ denial on newer
+        // Android). It's false both before the very first request and after a
+        // permanent denial — Android has no API to tell those two apart — so treat
+        // "granted, or Android says a rationale makes sense" as requestable.
+        val canRequest = granted || ActivityCompat.shouldShowRequestPermissionRationale(
             activity,
             Manifest.permission.RECORD_AUDIO
-        ) || !granted
-        
+        )
+
         Log.d(TAG, "  Permission RECORD_AUDIO: granted=$granted, canRequest=$canRequest")
 
         val ret = JSObject()
@@ -535,24 +545,25 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(ret)
             return
         }
-        
-        ActivityCompat.requestPermissions(
+
+        requestPermissionForAlias("microphone", invoke, "permissionCallback")
+    }
+
+    @Command
+    @PermissionCallback
+    fun permissionCallback(invoke: Invoke) {
+        val granted = ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        val canRequest = granted || ActivityCompat.shouldShowRequestPermissionRationale(
             activity,
-            arrayOf(Manifest.permission.RECORD_AUDIO),
-            REQUEST_RECORD_AUDIO
+            Manifest.permission.RECORD_AUDIO
         )
-        
-        // Since Plugin class doesn't have onRequestPermissionsResult callback,
-        // we resolve immediately with the current status after showing the dialog
-        // The user will need to retry the action after granting permission
-        Handler(Looper.getMainLooper()).postDelayed({
-            val nowGranted = ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
-                    PackageManager.PERMISSION_GRANTED
-            val ret = JSObject()
-            ret.put("granted", nowGranted)
-            ret.put("canRequest", !nowGranted)
-            invoke.resolve(ret)
-        }, 500) // Small delay to let the permission dialog appear
+        Log.d(TAG, "  permissionCallback: granted=$granted, canRequest=$canRequest")
+
+        val ret = JSObject()
+        ret.put("granted", granted)
+        ret.put("canRequest", canRequest)
+        invoke.resolve(ret)
     }
 
     private fun cleanup() {
@@ -562,6 +573,11 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
         recordingStartTime = 0
         pausedDuration = 0
         pauseStartTime = 0
+        try {
+            mediaRecorder?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing MediaRecorder during cleanup: ${e.message}")
+        }
         mediaRecorder = null
     }
 

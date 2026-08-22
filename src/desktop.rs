@@ -4,6 +4,7 @@ use hound::{WavSpec, WavWriter};
 use serde::de::DeserializeOwned;
 use std::fs::File;
 use std::io::BufWriter;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -12,6 +13,9 @@ use tauri::{plugin::PluginApi, AppHandle, Runtime};
 
 use crate::error::Error;
 use crate::models::*;
+use crate::paths::validate_path;
+
+type SharedWavWriter = Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>;
 
 // Commands for the recording thread
 enum RecorderCommand {
@@ -30,6 +34,7 @@ struct SharedState {
     output_path: Mutex<Option<String>>,
     sample_rate: AtomicU64,
     channels: AtomicU64,
+    generation: AtomicU64,
 }
 
 impl Default for SharedState {
@@ -41,12 +46,13 @@ impl Default for SharedState {
             output_path: Mutex::new(None),
             sample_rate: AtomicU64::new(44100),
             channels: AtomicU64::new(1),
+            generation: AtomicU64::new(0),
         }
     }
 }
 
 pub fn init<R: Runtime, C: DeserializeOwned>(
-    app: &AppHandle<R>,
+    _app: &AppHandle<R>,
     _api: PluginApi<R, C>,
 ) -> crate::Result<AudioRecorder<R>> {
     let shared = Arc::new(SharedState::default());
@@ -54,28 +60,33 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 
     // Spawn the recording thread
     let shared_clone = Arc::clone(&shared);
+    let cmd_tx_clone = cmd_tx.clone();
     let handle = thread::spawn(move || {
-        recording_thread(cmd_rx, shared_clone);
+        recording_thread(cmd_rx, shared_clone, cmd_tx_clone);
     });
 
     Ok(AudioRecorder {
-        app: app.clone(),
         shared,
         cmd_tx,
         _thread_handle: Mutex::new(Some(handle)),
+        _runtime: PhantomData,
     })
 }
 
 // Recording thread - owns all non-Send cpal types
-fn recording_thread(rx: mpsc::Receiver<RecorderCommand>, shared: Arc<SharedState>) {
+fn recording_thread(
+    rx: mpsc::Receiver<RecorderCommand>,
+    shared: Arc<SharedState>,
+    cmd_tx: mpsc::Sender<RecorderCommand>,
+) {
     let mut current_stream: Option<cpal::Stream> = None;
-    let mut current_writer: Option<Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>> = None;
+    let mut current_writer: Option<SharedWavWriter> = None;
     let mut write_flag: Option<Arc<AtomicBool>> = None;
 
     loop {
         match rx.recv() {
             Ok(RecorderCommand::Start(config, reply)) => {
-                let result = start_recording_internal(&config, &shared);
+                let result = start_recording_internal(&config, &shared, &cmd_tx);
                 match result {
                     Ok((stream, writer, flag)) => {
                         current_stream = Some(stream);
@@ -135,7 +146,10 @@ fn recording_thread(rx: mpsc::Receiver<RecorderCommand>, shared: Arc<SharedState
 /// `device_id` (as returned by `get_devices`), or the system default when no
 /// id is given. A requested device that is no longer present (e.g. unplugged
 /// since the last device scan) falls back to the default so the recording
-/// still succeeds.
+/// still succeeds — unless a `channel_id` was also requested and the
+/// fallback device can't honor it, in which case the recording still fails
+/// with `InvalidChannel` rather than silently capturing the wrong physical
+/// channel on a device the caller didn't ask for.
 fn find_input_device(host: &cpal::Host, device_id: Option<&str>) -> Result<cpal::Device, Error> {
     if let Some(id) = device_id {
         let mut devices = host
@@ -159,14 +173,14 @@ fn device_channel_count(device: &cpal::Device) -> u16 {
     let from_supported = device
         .supported_input_configs()
         .ok()
-        .and_then(|configs| configs.map(|cfg| cfg.channels()).max());
+        .and_then(|configs| configs.map(|cfg| cfg.channels()).filter(|&c| c > 0).max());
 
     match from_supported {
-        Some(channels) if channels > 0 => channels,
-        _ => device
-            .default_input_config()
-            .map(|cfg| cfg.channels())
-            .unwrap_or(1),
+        Some(channels) => channels,
+        None => match device.default_input_config() {
+            Ok(cfg) if cfg.channels() > 0 => cfg.channels(),
+            _ => 1,
+        },
     }
 }
 
@@ -205,17 +219,63 @@ fn wav_samples<T>(data: &[T], channel: Option<u16>, channels: u16) -> impl Itera
     data.iter().skip(offset).step_by(step)
 }
 
+/// Pick the best supported (sample_rate, channels) for a requested quality,
+/// from each config's (sr_min, sr_max, channels).
+fn negotiate_config(
+    configs: impl Iterator<Item = (u32, u32, u16)>,
+    target_sample_rate: u32,
+    target_channels: u16,
+    channel_selected: bool,
+) -> Option<(u32, u16)> {
+    let mut sample_rate_match = None;
+    for (sr_min, sr_max, ch) in configs {
+        let sr_in_range = target_sample_rate >= sr_min && target_sample_rate <= sr_max;
+        if sr_in_range && ch == target_channels {
+            return Some((target_sample_rate, target_channels));
+        }
+        if !channel_selected && sr_in_range && sample_rate_match.is_none() {
+            sample_rate_match = Some((target_sample_rate, ch));
+        }
+    }
+    sample_rate_match
+}
+
+/// Resolve the WAV output path for a recording. Empty, or a relative path
+/// (bare filename or subdirectory), resolves under the OS temp directory
+/// rather than the process's unpredictable current directory; an absolute
+/// path is used as-is. Rejects `..` path-traversal components.
+fn resolve_wav_path(output_path: &str) -> Result<PathBuf, Error> {
+    if output_path.is_empty() {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        return Ok(std::env::temp_dir().join(format!("recording-{}.wav", timestamp)));
+    }
+
+    validate_path(output_path)?;
+
+    let with_wav_extension = |name: &str| -> String {
+        if name.to_lowercase().ends_with(".wav") {
+            name.to_string()
+        } else {
+            format!("{}.wav", name)
+        }
+    };
+
+    let path = PathBuf::from(output_path);
+    if path.is_absolute() {
+        Ok(PathBuf::from(with_wav_extension(output_path)))
+    } else {
+        Ok(std::env::temp_dir().join(with_wav_extension(output_path)))
+    }
+}
+
 fn start_recording_internal(
     config: &RecordingConfig,
     shared: &Arc<SharedState>,
-) -> Result<
-    (
-        cpal::Stream,
-        Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
-        Arc<AtomicBool>,
-    ),
-    Error,
-> {
+    cmd_tx: &mpsc::Sender<RecorderCommand>,
+) -> Result<(cpal::Stream, SharedWavWriter, Arc<AtomicBool>), Error> {
     if shared.is_recording.load(Ordering::SeqCst) {
         return Err(Error::AlreadyRecording);
     }
@@ -241,67 +301,52 @@ fn start_recording_internal(
 
     // Check if device supports the target configuration
     let supported_configs = device.supported_input_configs();
-    let (sample_rate, channels) = if let Ok(configs) = supported_configs {
-        let mut best_match = None;
-        for cfg in configs {
-            let sr_min = cfg.min_sample_rate().0;
-            let sr_max = cfg.max_sample_rate().0;
-            let ch = cfg.channels();
-
-            // Check if target sample rate is in range and channels match
-            if target_sample_rate >= sr_min && target_sample_rate <= sr_max && ch == target_channels
-            {
-                best_match = Some((target_sample_rate, target_channels));
-                break;
-            }
-            // Try just matching sample rate
-            if best_match.is_none() && target_sample_rate >= sr_min && target_sample_rate <= sr_max
-            {
-                best_match = Some((target_sample_rate, ch));
-            }
-        }
-
-        match best_match {
-            Some((sr, ch)) => {
-                log::info!(
-                    "Using quality preset: {}Hz, {} channels (target was {}Hz, {} channels)",
-                    sr,
-                    ch,
-                    target_sample_rate,
-                    target_channels
-                );
-                (sr, ch)
-            }
-            None => {
-                log::warn!(
-                    "Quality preset not supported ({}Hz, {} ch), using device defaults",
-                    target_sample_rate,
-                    target_channels
-                );
+    let negotiated = supported_configs.ok().and_then(|configs| {
+        negotiate_config(
+            configs.map(|cfg| {
                 (
-                    supported_config.sample_rate().0,
-                    supported_config.channels(),
+                    cfg.min_sample_rate().0,
+                    cfg.max_sample_rate().0,
+                    cfg.channels(),
                 )
-            }
-        }
-    } else {
-        log::warn!("Could not enumerate supported configs, using device defaults");
-        (
-            supported_config.sample_rate().0,
-            supported_config.channels(),
+            }),
+            target_sample_rate,
+            target_channels,
+            selected_channel.is_some(),
         )
+    });
+
+    let (sample_rate, channels) = match negotiated {
+        Some((sr, ch)) => {
+            log::info!(
+                "Using quality preset: {}Hz, {} channels (target was {}Hz, {} channels)",
+                sr,
+                ch,
+                target_sample_rate,
+                target_channels
+            );
+            (sr, ch)
+        }
+        None => {
+            if let Some(index) = selected_channel {
+                return Err(Error::InvalidChannel(format!(
+                    "'{}' — no supported input configuration offers {} channel(s) at {}Hz",
+                    index, target_channels, target_sample_rate
+                )));
+            }
+            log::warn!(
+                "Quality preset not supported ({}Hz, {} ch), using device defaults",
+                target_sample_rate,
+                target_channels
+            );
+            (
+                supported_config.sample_rate().0,
+                supported_config.channels(),
+            )
+        }
     };
 
-    // The negotiation above can settle on fewer channels than the device
-    // advertises, which would leave the requested channel out of the stream.
-    if let Some(index) = selected_channel {
-        if index >= channels {
-            return Err(Error::InvalidChannel(format!(
-                "'{}' — the input stream has {} channel(s)",
-                index, channels
-            )));
-        }
-    }
+    debug_assert!(selected_channel.map_or(true, |index| index < channels));
 
     // Only the selected channel is written, so the file becomes mono
     let output_channels = if selected_channel.is_some() {
@@ -325,27 +370,8 @@ fn start_recording_internal(
     };
 
     // Create output file path
-    // If output_path is empty or just a filename, use temp directory
-    let file_path = if config.output_path.is_empty() {
-        // Generate unique filename in temp directory
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let temp_dir = std::env::temp_dir();
-        let filename = format!("recording-{}.wav", timestamp);
-        temp_dir.join(filename).to_string_lossy().to_string()
-    } else if !config.output_path.contains('/') && !config.output_path.contains('\\') {
-        // Just a filename without path, use temp directory
-        let temp_dir = std::env::temp_dir();
-        let filename = format!("{}.wav", config.output_path);
-        temp_dir.join(filename).to_string_lossy().to_string()
-    } else {
-        // Full path provided, use as-is
-        format!("{}.wav", config.output_path)
-    };
-
-    let path = PathBuf::from(&file_path);
+    let path = resolve_wav_path(&config.output_path)?;
+    let file_path = path.to_string_lossy().to_string();
 
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
@@ -451,6 +477,7 @@ fn start_recording_internal(
         .map_err(|e| Error::Recording(format!("Failed to start audio stream: {}", e)))?;
 
     // Update shared state
+    let generation = shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
     shared.is_recording.store(true, Ordering::SeqCst);
     shared.is_paused.store(false, Ordering::SeqCst);
     shared.duration_ms.store(0, Ordering::SeqCst);
@@ -468,13 +495,46 @@ fn start_recording_internal(
         output_channels
     );
 
+    if config.max_duration > 0 {
+        spawn_max_duration_watcher(
+            shared,
+            cmd_tx,
+            generation,
+            std::time::Duration::from_secs(config.max_duration as u64),
+        );
+    }
+
     Ok((stream, writer, write_enabled))
+}
+
+/// Auto-stops a recording after `duration`, unless it's already stopped or a
+/// newer recording (different `generation`) has started by then.
+fn spawn_max_duration_watcher(
+    shared: &Arc<SharedState>,
+    cmd_tx: &mpsc::Sender<RecorderCommand>,
+    generation: u64,
+    duration: std::time::Duration,
+) {
+    let shared = Arc::clone(shared);
+    let cmd_tx = cmd_tx.clone();
+    thread::spawn(move || {
+        thread::sleep(duration);
+        // ponytail: check-then-send narrows but doesn't fully close the race
+        // against a manual stop+restart in the same instant this fires; add
+        // a generation-checked stop command if that ever matters in practice.
+        if shared.is_recording.load(Ordering::SeqCst)
+            && shared.generation.load(Ordering::SeqCst) == generation
+        {
+            let (reply_tx, _reply_rx) = mpsc::channel();
+            let _ = cmd_tx.send(RecorderCommand::Stop(reply_tx));
+        }
+    });
 }
 
 fn stop_recording_internal(
     shared: &Arc<SharedState>,
     stream: &mut Option<cpal::Stream>,
-    writer: &mut Option<Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>>,
+    writer: &mut Option<SharedWavWriter>,
 ) -> Result<RecordingResult, Error> {
     if !shared.is_recording.load(Ordering::SeqCst) {
         return Err(Error::NotRecording);
@@ -492,16 +552,16 @@ fn stop_recording_internal(
         drop(s);
     }
 
-    // Finalize the WAV file
-    if let Some(w) = writer.take() {
-        if let Ok(mut guard) = w.lock() {
-            if let Some(wav_writer) = guard.take() {
+    // Finalize the WAV file.
+    let finalize_result =
+        writer
+            .take()
+            .and_then(|w| w.lock().ok()?.take())
+            .map_or(Ok(()), |wav_writer| {
                 wav_writer
                     .finalize()
-                    .map_err(|e| Error::Recording(format!("Failed to finalize WAV: {}", e)))?;
-            }
-        }
-    }
+                    .map_err(|e| Error::Recording(format!("Failed to finalize WAV: {}", e)))
+            });
 
     let duration_ms = shared.duration_ms.load(Ordering::SeqCst);
     let sample_rate = shared.sample_rate.load(Ordering::SeqCst) as u32;
@@ -510,7 +570,7 @@ fn stop_recording_internal(
         .output_path
         .lock()
         .unwrap()
-        .clone()
+        .take()
         .unwrap_or_default();
 
     // Get file size
@@ -522,6 +582,8 @@ fn stop_recording_internal(
     shared.is_recording.store(false, Ordering::SeqCst);
     shared.is_paused.store(false, Ordering::SeqCst);
     shared.duration_ms.store(0, Ordering::SeqCst);
+
+    finalize_result?;
 
     log::info!("Recording stopped: {} ({}ms)", output_path, duration_ms);
 
@@ -536,11 +598,10 @@ fn stop_recording_internal(
 
 /// Access to the audio-recorder APIs.
 pub struct AudioRecorder<R: Runtime> {
-    #[allow(dead_code)]
-    app: AppHandle<R>,
     shared: Arc<SharedState>,
     cmd_tx: mpsc::Sender<RecorderCommand>,
     _thread_handle: Mutex<Option<JoinHandle<()>>>,
+    _runtime: PhantomData<fn() -> R>,
 }
 
 impl<R: Runtime> AudioRecorder<R> {
@@ -722,6 +783,42 @@ mod tests {
     }
 
     #[test]
+    fn test_negotiate_config_exact_match_preferred() {
+        let configs = [(44100, 48000, 2), (16000, 48000, 8)];
+        // Both configs cover 44100Hz; the one with the target channel count wins.
+        assert_eq!(
+            negotiate_config(configs.into_iter(), 44100, 8, true),
+            Some((44100, 8))
+        );
+    }
+
+    #[test]
+    fn test_negotiate_config_no_channel_selected_falls_back_to_sample_rate() {
+        // No config offers 8 channels at all; without a channel selected,
+        // matching just the sample rate is an acceptable fallback.
+        let configs = [(44100, 48000, 2)];
+        assert_eq!(
+            negotiate_config(configs.into_iter(), 44100, 8, false),
+            Some((44100, 2))
+        );
+    }
+
+    #[test]
+    fn test_negotiate_config_channel_selected_rejects_narrower_fallback() {
+        // Same input as above, but with a channel selected: falling back to
+        // the 2-channel config would silently point the selected index at a
+        // different physical channel, so this must return None instead.
+        let configs = [(44100, 48000, 2)];
+        assert_eq!(negotiate_config(configs.into_iter(), 44100, 8, true), None);
+    }
+
+    #[test]
+    fn test_negotiate_config_no_sample_rate_match() {
+        let configs = [(8000, 16000, 2)];
+        assert_eq!(negotiate_config(configs.into_iter(), 44100, 2, false), None);
+    }
+
+    #[test]
     fn test_wav_samples_selected_channel() {
         // Two interleaved frames: [left, right, left, right]
         let data = [1, 2, 3, 4];
@@ -729,5 +826,111 @@ mod tests {
         let right: Vec<_> = wav_samples(&data, Some(1), 2).copied().collect();
         assert_eq!(left, vec![1, 3]);
         assert_eq!(right, vec![2, 4]);
+    }
+
+    #[test]
+    fn test_resolve_wav_path_empty_goes_to_temp_dir() {
+        let path = resolve_wav_path("").unwrap();
+        assert_eq!(path.parent().unwrap(), std::env::temp_dir());
+        assert_eq!(path.extension().unwrap(), "wav");
+    }
+
+    #[test]
+    fn test_resolve_wav_path_bare_filename_goes_to_temp_dir() {
+        let path = resolve_wav_path("my-recording").unwrap();
+        assert_eq!(path, std::env::temp_dir().join("my-recording.wav"));
+    }
+
+    #[test]
+    fn test_resolve_wav_path_relative_subdir_goes_to_temp_dir_not_cwd() {
+        // A relative path with a subdirectory used to be treated as "the
+        // full path, use as-is" and resolved against the process's CWD.
+        let path = resolve_wav_path("myfolder/myrecording").unwrap();
+        assert_eq!(path, std::env::temp_dir().join("myfolder/myrecording.wav"));
+    }
+
+    #[test]
+    fn test_resolve_wav_path_absolute_used_as_is() {
+        let path = resolve_wav_path("/custom/path/recording").unwrap();
+        assert_eq!(path, PathBuf::from("/custom/path/recording.wav"));
+    }
+
+    #[test]
+    fn test_resolve_wav_path_does_not_double_extension() {
+        let path = resolve_wav_path("/custom/path/recording.wav").unwrap();
+        assert_eq!(path, PathBuf::from("/custom/path/recording.wav"));
+    }
+
+    #[test]
+    fn test_resolve_wav_path_rejects_traversal() {
+        assert!(matches!(
+            resolve_wav_path("../escape"),
+            Err(Error::InvalidPath(_))
+        ));
+        assert!(matches!(
+            resolve_wav_path("/absolute/../../escape"),
+            Err(Error::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn test_max_duration_watcher_stops_the_still_active_recording() {
+        let shared = Arc::new(SharedState::default());
+        shared.is_recording.store(true, Ordering::SeqCst);
+        let generation = shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, rx) = mpsc::channel();
+
+        spawn_max_duration_watcher(
+            &shared,
+            &tx,
+            generation,
+            std::time::Duration::from_millis(5),
+        );
+
+        assert!(matches!(
+            rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(RecorderCommand::Stop(_))
+        ));
+    }
+
+    #[test]
+    fn test_max_duration_watcher_is_a_noop_after_manual_stop() {
+        let shared = Arc::new(SharedState::default());
+        shared.is_recording.store(true, Ordering::SeqCst);
+        let generation = shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, rx) = mpsc::channel();
+
+        spawn_max_duration_watcher(
+            &shared,
+            &tx,
+            generation,
+            std::time::Duration::from_millis(5),
+        );
+        shared.is_recording.store(false, Ordering::SeqCst);
+
+        assert!(rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err());
+    }
+
+    #[test]
+    fn test_max_duration_watcher_is_a_noop_after_a_newer_recording_starts() {
+        let shared = Arc::new(SharedState::default());
+        shared.is_recording.store(true, Ordering::SeqCst);
+        let generation = shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, rx) = mpsc::channel();
+
+        spawn_max_duration_watcher(
+            &shared,
+            &tx,
+            generation,
+            std::time::Duration::from_millis(5),
+        );
+        // A new recording started (and is still active) before the watcher fired.
+        shared.generation.fetch_add(1, Ordering::SeqCst);
+
+        assert!(rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err());
     }
 }

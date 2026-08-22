@@ -16,7 +16,7 @@ mod models;
 mod paths;
 
 pub use error::{Error, Result};
-pub use paths::{get_cache_dir, get_recordings_dir, resolve_output_path, validate_path};
+pub use paths::validate_path;
 
 #[cfg(desktop)]
 use desktop::AudioRecorder;

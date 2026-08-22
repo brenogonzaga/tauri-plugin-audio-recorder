@@ -19,6 +19,7 @@ class AudioRecorderPlugin: Plugin {
     private var isPaused: Bool = false
     private var isRecording: Bool = false
     private var isStopping: Bool = false  // Guard against concurrent stop calls
+    private let stopLock = NSLock()
     private var currentFilePath: String?
     private var currentSampleRate: Int = 44100
     private var currentChannels: Int = 1
@@ -204,7 +205,7 @@ class AudioRecorderPlugin: Plugin {
                 .replacingOccurrences(of: ".aac", with: "")
         }
         // Build full absolute path in cache directory
-        let filePath = cacheDir.appendingPathComponent("\(filename).aac").path
+        let filePath = cacheDir.appendingPathComponent("\(filename).m4a").path
         currentFilePath = filePath
         let fileUrl = URL(fileURLWithPath: filePath)
         
@@ -218,8 +219,8 @@ class AudioRecorderPlugin: Plugin {
             
             let settings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 44100,
-                AVNumberOfChannelsKey: 1,
+                AVSampleRateKey: currentSampleRate,
+                AVNumberOfChannelsKey: currentChannels,
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
                 AVEncoderBitRateKey: 128000
             ]
@@ -271,13 +272,19 @@ class AudioRecorderPlugin: Plugin {
     private func stopRecordingInternal() -> [String: Any]? {
         NSLog("[AudioRecorder] stopRecordingInternal() CALLED")
         
-        // Guard against concurrent stop calls (e.g., maxDuration timer + manual stop)
-        guard !isStopping else {
+        // Guard against concurrent stop calls (e.g., maxDuration timer + manual stop).
+        // The timer fires on the main run loop while a manual stop comes through
+        // Tauri's invoke handling, so the check-then-set needs a lock, not just a
+        // plain Bool (which a plain `guard ... isStopping = true` isn't safe against).
+        stopLock.lock()
+        if isStopping {
+            stopLock.unlock()
             NSLog("[AudioRecorder]   Stop already in progress, ignoring duplicate call")
             return nil
         }
         isStopping = true
-        
+        stopLock.unlock()
+
         defer {
             isStopping = false
         }
@@ -439,24 +446,26 @@ class AudioRecorderPlugin: Plugin {
         NSLog("[AudioRecorder] checkPermission() CALLED")
         
         let permission = AVAudioSession.sharedInstance().recordPermission
-        
+
         let granted = permission == .granted
-        let canRequest = permission == .undetermined
-        
+        // iOS never lets you re-prompt after an explicit denial (no rationale API
+        // like Android's), so "can request" is simply "not permanently denied".
+        let canRequest = permission != .denied
+
         NSLog("[AudioRecorder]   Permission: \(permission.rawValue)")
-        NSLog("[AudioRecorder]   Granted: \(granted), CanRequest: \(canRequest || !granted)")
-        
+        NSLog("[AudioRecorder]   Granted: \(granted), CanRequest: \(canRequest)")
+
         invoke.resolve([
             "granted": granted,
-            "canRequest": canRequest || !granted
+            "canRequest": canRequest
         ])
     }
-    
+
     @objc public func requestPermission(_ invoke: Invoke) throws {
         NSLog("[AudioRecorder] requestPermission() CALLED")
-        
+
         let session = AVAudioSession.sharedInstance()
-        
+
         if session.recordPermission == .granted {
             NSLog("[AudioRecorder]   Already granted")
             invoke.resolve([
@@ -465,14 +474,19 @@ class AudioRecorderPlugin: Plugin {
             ])
             return
         }
-        
+
         NSLog("[AudioRecorder]   Requesting permission...")
         session.requestRecordPermission { granted in
-            NSLog("[AudioRecorder]   Permission result: \(granted)")
-            invoke.resolve([
-                "granted": granted,
-                "canRequest": !granted
-            ])
+            // Apple doesn't guarantee this completion runs on the main thread,
+            // and invoke.resolve() touches the WKWebView, so hop back like
+            // startRecording()'s handling of the same API does.
+            DispatchQueue.main.async {
+                NSLog("[AudioRecorder]   Permission result: \(granted)")
+                invoke.resolve([
+                    "granted": granted,
+                    "canRequest": granted
+                ])
+            }
         }
     }
     
