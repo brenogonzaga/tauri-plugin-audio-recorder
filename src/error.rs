@@ -22,6 +22,9 @@ pub enum Error {
     #[error("Audio device not found")]
     DeviceNotFound,
 
+    #[error("Invalid channel: {0}")]
+    InvalidChannel(String),
+
     #[error("Unsupported audio format")]
     UnsupportedFormat,
 

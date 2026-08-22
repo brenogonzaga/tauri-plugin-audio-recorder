@@ -67,6 +67,12 @@ impl<R: Runtime> AudioRecorder<R> {
             .map_err(Into::into)
     }
 
+    /// List the input channels of an audio device
+    pub fn get_channels(&self, _device_id: Option<String>) -> crate::Result<AudioChannelsResponse> {
+        // Mobile records the active audio route; channel selection is desktop only
+        Ok(AudioChannelsResponse { channels: vec![] })
+    }
+
     /// Check microphone permission
     pub fn check_permission(&self) -> crate::Result<PermissionStatus> {
         self.0

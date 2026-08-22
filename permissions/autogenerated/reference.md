@@ -10,6 +10,7 @@ Default permissions for the Audio Recorder plugin - allows all audio recording o
 - `allow-resume-recording`
 - `allow-get-status`
 - `allow-get-devices`
+- `allow-get-channels`
 - `allow-check-permission`
 - `allow-request-permission`
 
@@ -44,6 +45,32 @@ Enables the check_permission command without any pre-configured scope.
 <td>
 
 Denies the check_permission command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`audio-recorder:allow-get-channels`
+
+</td>
+<td>
+
+Enables the get_channels command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`audio-recorder:deny-get-channels`
+
+</td>
+<td>
+
+Denies the get_channels command without any pre-configured scope.
 
 </td>
 </tr>

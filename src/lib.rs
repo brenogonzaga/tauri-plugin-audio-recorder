@@ -44,6 +44,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::resume_recording,
             commands::get_status,
             commands::get_devices,
+            commands::get_channels,
             commands::check_permission,
             commands::request_permission,
         ])

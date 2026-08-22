@@ -43,6 +43,15 @@ pub(crate) async fn get_devices<R: Runtime>(app: AppHandle<R>) -> Result<AudioDe
     app.audio_recorder().get_devices()
 }
 
+/// List the input channels of an audio device
+#[command]
+pub(crate) async fn get_channels<R: Runtime>(
+    app: AppHandle<R>,
+    device_id: Option<String>,
+) -> Result<AudioChannelsResponse> {
+    app.audio_recorder().get_channels(device_id)
+}
+
 /// Check microphone permission status
 #[command]
 pub(crate) async fn check_permission<R: Runtime>(app: AppHandle<R>) -> Result<PermissionStatus> {

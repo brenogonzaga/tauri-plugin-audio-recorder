@@ -18,6 +18,14 @@ export interface RecordingConfig {
    * if the requested device is no longer available.
    */
   deviceId?: string;
+  /**
+   * Input channel to record from, identified by the `id` returned from
+   * `getChannels()`. Defaults to all channels of the device; selecting a
+   * channel produces a mono recording.
+   * Desktop only; ignored on mobile. Throws if the device does not have
+   * the requested channel.
+   */
+  channelId?: string;
 }
 
 export type RecordingState = "idle" | "recording" | "paused";
@@ -52,6 +60,16 @@ export interface AudioDevice {
 
 export interface DevicesResponse {
   devices: AudioDevice[];
+}
+
+export interface AudioChannel {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+export interface ChannelsResponse {
+  channels: AudioChannel[];
 }
 
 export async function startRecording(config: RecordingConfig): Promise<void> {
@@ -97,4 +115,15 @@ export async function requestPermission(): Promise<PermissionResponse> {
  */
 export async function getDevices(): Promise<DevicesResponse> {
   return await invoke("plugin:audio-recorder|get_devices");
+}
+
+/**
+ * Get the input channels of an audio device.
+ * @param deviceId Device to inspect, from `getDevices()`. Defaults to the system default input device.
+ * @returns List of available channels
+ */
+export async function getChannels(
+  deviceId?: string,
+): Promise<ChannelsResponse> {
+  return await invoke("plugin:audio-recorder|get_channels", { deviceId });
 }

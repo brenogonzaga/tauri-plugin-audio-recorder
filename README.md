@@ -55,6 +55,7 @@ Granular:
     "audio-recorder:allow-resume-recording",
     "audio-recorder:allow-get-status",
     "audio-recorder:allow-get-devices",
+    "audio-recorder:allow-get-channels",
     "audio-recorder:allow-check-permission",
     "audio-recorder:allow-request-permission"
   ]
@@ -86,6 +87,7 @@ import {
   resumeRecording,
   getStatus,
   getDevices,
+  getChannels,
   requestPermission,
 } from "tauri-plugin-audio-recorder-api";
 
@@ -135,6 +137,25 @@ If the requested device is no longer available when recording starts (e.g.
 unplugged), the recorder logs a warning and falls back to the system default
 device.
 
+### Channel selection (desktop only)
+
+By default every channel the device provides is recorded. To capture a single
+channel of a multi-channel input, pick one from `getChannels()`:
+
+```typescript
+const { channels } = await getChannels(devices[0].id); // omit the id for the default device
+channels.forEach(c => console.log(c.id, c.name)); // "0" "Channel 1", "1" "Channel 2", …
+
+await startRecording({
+  outputPath: "/path/to/recording",
+  deviceId: devices[0].id,
+  channelId: channels[1].id, // mono recording of Channel 2
+});
+```
+
+Unlike `deviceId`, an invalid `channelId` does not fall back — `startRecording()`
+throws `Invalid channel: …` and nothing is recorded.
+
 ### Max-duration detection
 
 `maxDuration` stops recording automatically with no callback. Poll to detect completion — and do **not** call `stopRecording()` afterward, since the recorder is already idle:
@@ -160,6 +181,7 @@ const poll = setInterval(async () => {
 - `resumeRecording()`
 - `getStatus()` → `{ state, durationMs, outputPath }`
 - `getDevices()` → `{ devices }` — desktop only, empty on mobile
+- `getChannels(deviceId?)` → `{ channels }` — desktop only, empty on mobile
 - `checkPermission()` / `requestPermission()` → `{ granted, canRequest }`
 
 ### RecordingConfig
@@ -170,6 +192,7 @@ interface RecordingConfig {
   quality?: "low" | "medium" | "high"; // 16kHz mono | 44.1kHz mono | 48kHz stereo
   maxDuration?: number;                 // seconds, 0 = unlimited
   deviceId?: string;                    // id from getDevices(); desktop only, default = system default
+  channelId?: string;                   // id from getChannels(); desktop only, default = all channels
 }
 ```
 
