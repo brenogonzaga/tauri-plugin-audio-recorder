@@ -224,6 +224,10 @@ interface RecordingResult {
 
 **Empty or tiny output file** — the output path's parent directory doesn't exist, or recording was stopped immediately. Check that `result.durationMs > 100` and `result.fileSize > 1000`.
 
+## Used By
+
+See [USED_BY.md](./USED_BY.md) for projects using this plugin in production.
+
 ## License
 
 MIT
